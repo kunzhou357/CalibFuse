@@ -56,10 +56,9 @@ directory. Resume must preserve training hyperparameters.
 ```bash
 python infer.py --data datasets/test_noise --output results/inference
 python test.py --data datasets/test_noise --reference datasets/test --output results/test_noise
-python diagnose.py --data datasets/test_noise --reference datasets/test --max-images 4 --crop-size 64
 ```
 
-All three default to `checkpoints/calibfuse.pth` and EMA weights. For a new
+Both default to `checkpoints/calibfuse.pth` and EMA weights. For a new
 training run, add `--checkpoint checkpoints/train/latest.pth`. `infer.py` needs
 no references and writes RGB/grayscale PNGs. `test.py` writes seven metrics,
 `metrics.csv`, and a protocol with checkpoint SHA-256 and sample names.
@@ -78,7 +77,7 @@ python -m compileall -q train.py infer.py test.py nets utils
 
 This repository ships the source only; there is no bundled test suite. Keep
 training and test sets separate and never commit images, weights, or results.
-See [repository rules](AGENTS.md). Source is MIT-licensed; the
+Source is MIT-licensed; the
 Restormer-derived modules in `nets/restormer.py` retain the upstream MIT
 notice under `licenses/`. Datasets and binary checkpoints are excluded from
 the source license.

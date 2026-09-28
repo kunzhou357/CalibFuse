@@ -14,3 +14,6 @@ results/
 # OS
 Thumbs.db
 .DS_Store
+
+# Agent instructions (local only)
+AGENTS.md

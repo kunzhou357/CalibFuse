@@ -1,29 +1,25 @@
-"""calibfuse-metrics-v1 指标协议：15 个图像融合质量指标的 NumPy 实现。
+"""calibfuse-metrics-v1 metric protocol: NumPy implementations of 15 fusion metrics.
 
-**协议警告**：本评估器定义了固定的指标约定（包括若干与常见实现
-不同的非常规约定，见下）。为保证历史与未来数值可比：
-- 不许替换为其他实现、不许"就地修复"这些约定；
-- 修正实现属于新协议（新版本号），不同协议的数值不可直接比较。
+Protocol warning: this evaluator fixes several unconventional conventions.
+For comparability, do not replace it or "fix" these conventions in place —
+a corrected implementation is a new protocol, and values from different
+protocols must not be compared.
 
-协议要点（跨代码库对比前必读）：
-1. **指标在保存后的 8-bit PNG 上计算**——输出量化误差属于协议
-   的一部分（见 utils/image.py 的 save_tensor）；
-2. **MI 使用自然对数**（多数文献/代码用 log2），且先对每张图做
-   min-max 归一化再量化到 256 级直方图；
-3. **SSIM 与 VIF 对两个源求和**（vi→fused 与 ir→fused 相加），
-   因此 SSIM 可以超过 1、VIF 大约为单源值的两倍量级；
-4. **PSNR/RMSE 的"均方"实为 sqrt(SSE)/(m·n)**——不是标准的
-   sqrt(SSE/(m·n))，系本协议的固定约定（_mse_quirk），数值显著
-   小于常规 RMSE；
-5. **Qabf 保留"梯度相等"分支**（ratio = g_f，常规实现多取 1）；
-6. 灰度转换使用 BT.601 系数并做 MATLAB 式四舍五入
-   （floor(x+0.5)，与 np.rint 的银行家舍入不同）。
+Key conventions:
+1. Metrics are computed on the saved 8-bit PNGs.
+2. MI uses natural logs (not log2) on 256-level histograms.
+3. SSIM and VIF sum the two source scores (SSIM can exceed 1).
+4. The PSNR/RMSE "mean square" is ``sqrt(SSE) / (m * n)``, not
+   ``sqrt(SSE / (m * n))``.
+5. Qabf keeps the equal-gradient branch (``ratio = g_f``).
+6. Grayscale conversion uses the exact MATLAB ``rgb2gray`` coefficients
+   with MATLAB rounding (``floor(x + 0.5)``).
 
-指标一览（METRIC_ORDER 即 test.py 报表列序）：
-EN 熵、CE 交叉熵、MI 互信息、PSNR、AG 平均梯度、EI 边缘强度、
-Qabf 基于梯度的融合质量、SD 标准差、SF 空间频率、RMSE、SSIM、
-Qcb/Qcv（Chen-Blum 与 Chen-Varma 感知协议）、SCD 相关系数和、
-VIF 视觉信息保真度。
+Metrics (METRIC_ORDER is the report column order): EN entropy, CE cross
+entropy, MI mutual information, PSNR, AG average gradient, EI edge
+intensity, Qabf gradient-based fusion quality, SD standard deviation, SF
+spatial frequency, RMSE, SSIM, Qcb/Qcv (Chen-Blum and Chen-Varma perceptual
+protocols), SCD sum of correlations, VIF visual information fidelity.
 """
 
 
@@ -33,26 +29,17 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-# 报表列序；test.py 按此顺序输出 metrics.csv
+# Report column order used by test.py for metrics.csv.
 METRIC_ORDER = ("EN", "CE", "MI", "PSNR", "AG", "EI", "Qabf", "SD", "SF", "RMSE", "SSIM", "Qcb", "Qcv", "SCD", "VIF")
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 def _matlab_round(x: np.ndarray) -> np.ndarray:
-    """MATLAB 式四舍五入：floor(x + 0.5)。
-
-    与 numpy 的 rint（银行家舍入：0.5 取偶数）不同，历史 MATLAB
-    实现如此；灰度转换与直方图量化均用它，差一个像素级会影响
-    直方图类指标的可比性。
-    """
+    """MATLAB rounding: ``floor(x + 0.5)`` (differs from np.rint at .5)."""
     return np.floor(np.asarray(x, dtype=np.float64) + 0.5)
 
 def _maybe_gray(img: np.ndarray) -> np.ndarray:
-    """转灰度：二维原样返回；三维用 BT.601 系数加权并取整截断。
-
-    系数是 MATLAB rgb2gray 的精确浮点值（非 0.299/0.587/0.114 的
-    简化值），配合 _matlab_round 保持与历史实现比特一致。
-    """
+    """Grayscale conversion with the exact MATLAB rgb2gray coefficients."""
     if img.ndim == 2:
         return img
     coef = np.array([0.298936021293775, 0.587043074451121, 0.114020904255103])
@@ -61,24 +48,11 @@ def _maybe_gray(img: np.ndarray) -> np.ndarray:
 
 
 def _conv2(x: np.ndarray, kernel: np.ndarray, mode: str = "same") -> np.ndarray:
-    """FFT 实现的二维卷积（MATLAB conv2 语义：核翻转的真卷积）。
-
-    用 FFT 而非 scipy.signal 是为了不引入额外依赖；对 3x3 核与
-    小图足够快且数值精度可用 float64 保证。
-
-    参数:
-        x: 输入图 (H, W)。
-        kernel: 卷积核 (kh, kw)。
-        mode: ``"same"`` 输出同尺寸（居中裁剪）；``"valid"`` 只输出
-            完全覆盖区域。
-
-    返回:
-        卷积结果（float64）。
-    """
+    """FFT-based 2D convolution with MATLAB ``conv2`` semantics (kernel flipped)."""
     x = np.asarray(x, dtype=np.float64)
     kernel = np.asarray(kernel, dtype=np.float64)
     kh, kw = kernel.shape
-    # 零填充到"full"尺寸后在频域相乘
+    # multiply in the frequency domain on the zero-padded "full" size
     fh, fw = x.shape[0] + kh - 1, x.shape[1] + kw - 1
     full = np.fft.irfft2(
         np.fft.rfft2(x, (fh, fw)) * np.fft.rfft2(kernel, (fh, fw)), (fh, fw)
@@ -91,36 +65,33 @@ def _conv2(x: np.ndarray, kernel: np.ndarray, mode: str = "same") -> np.ndarray:
 
 
 def _filter2_same(x: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """MATLAB filter2('same') 语义：相关（不翻转核）。"""
+    """MATLAB ``filter2('same')`` semantics: correlation (kernel not flipped)."""
     return _conv2(x, np.asarray(kernel)[::-1, ::-1], "same")
 
 def _filter2_valid(x: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """filter2('valid') 语义的相关运算（不翻转核，valid 裁剪）。"""
+    """MATLAB ``filter2('valid')`` semantics: correlation, valid cropping."""
     return _conv2(x, np.asarray(kernel)[::-1, ::-1], "valid")
 
 def _imfilter_replicate(x: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """边缘复制填充 + valid 相关（MATLAB imfilter 默认 'replicate'）。"""
+    """Edge-replicate padding + valid correlation (MATLAB ``imfilter`` default)."""
     kh, kw = kernel.shape
     xp = np.pad(np.asarray(x, dtype=np.float64), ((kh // 2, kh // 2), (kw // 2, kw // 2)), mode="edge")
     return _filter2_valid(xp, kernel)
 
 def _freqspace_1d(n: int) -> np.ndarray:
-    """MATLAB freqspace 的 1D 归一化频率轴 [-1, 1)。
-
-    偶数：[-n/2, n/2)/(n/2)；奇数：[-d, d]/d。供 CSF 频率网格用。
-    """
+    """MATLAB ``freqspace`` 1D normalized frequency axis in [-1, 1)."""
     if n % 2 == 0:
         return np.arange(-(n // 2), n // 2) / (n / 2.0)
     d = (n - 1) // 2
     return np.arange(-d, d + 1) / float(d)
 
 def _freqspace_meshgrid(rows: int, cols: int) -> tuple[np.ndarray, np.ndarray]:
-    """二维频率网格 (u 列向, v 行向)，值域 [-1,1)。"""
+    """2D frequency grid (u across columns, v down rows) in [-1, 1)."""
     f_rows, f_cols = _freqspace_1d(rows), _freqspace_1d(cols)
     return np.meshgrid(f_cols, f_rows)
 
 def _gaussian_window(size: int, sigma: float) -> np.ndarray:
-    """归一化的方形高斯窗（SSIM 的 11x11、σ=1.5 标准窗）。"""
+    """Normalized square Gaussian window (SSIM default: 11x11, sigma 1.5)."""
     c = (size - 1) / 2.0
     y, x = np.ogrid[-c : c + 1, -c : c + 1]
     w = np.exp(-(x * x + y * y) / (2.0 * sigma * sigma))
@@ -128,23 +99,17 @@ def _gaussian_window(size: int, sigma: float) -> np.ndarray:
 
 
 def _gaussian2d_31(sigma: float) -> np.ndarray:
-    """31x31 未归一化的二维高斯（Qcb 的 DoG 对比度用）。"""
+    """Unnormalized 31x31 2D Gaussian (Qcb DoG contrast detection)."""
     y, x = np.mgrid[-15:16, -15:16]
     return np.exp(-(x * x + y * y) / (2.0 * sigma * sigma)) / (2.0 * math.pi * sigma * sigma)
 
 
 def read_image(path: str | Path, size: tuple[int, int] | None = None) -> np.ndarray:
-    """读取图像为 float64 数组（H,W）或 (H,W,3)。
+    """Read an image as float64 in [0, 255] (2D or (H, W, 3)).
 
-    调色板图转 RGB；RGBA 截取前三通道；需要时可双线性缩放到
-    指定 (rows, cols)（先量化回 uint8 再缩放，保持 8-bit 语义）。
-
-    参数:
-        path: 图像路径。
-        size: 可选的目标 (rows, cols)；与当前不同才缩放。
-
-    返回:
-        float64 数组，取值 [0,255]。
+    Palette images convert to RGB; RGBA keeps the first three channels.
+    ``size`` optionally resizes with 8-bit semantics (round to uint8 first,
+    then bilinear resize).
     """
     with Image.open(path) as im:
         if im.mode == "P":
@@ -154,14 +119,13 @@ def read_image(path: str | Path, size: tuple[int, int] | None = None) -> np.ndar
         arr = arr[..., :3]
     arr = arr.astype(np.float64)
     if size is not None and arr.shape[:2] != tuple(size):
-        # 与源图对齐（尺寸不一致的红外等）：回 uint8 再双线性缩放
         u8 = Image.fromarray(np.clip(np.rint(arr), 0, 255).astype(np.uint8))
         arr = np.asarray(u8.resize((size[1], size[0]), Image.BILINEAR)).astype(np.float64)
     return arr
 
 
 def _normalize255(img: np.ndarray) -> np.ndarray:
-    """min-max 拉伸到 [0,255] 并 MATLAB 取整；全零图原样返回。"""
+    """Min-max stretch to [0, 255] with MATLAB rounding; all-zero images pass through."""
     lo, hi = float(img.min()), float(img.max())
     if hi == 0.0 and lo == 0.0:
         return img.astype(np.float64)
@@ -169,16 +133,13 @@ def _normalize255(img: np.ndarray) -> np.ndarray:
 
 
 def _hist256(img: np.ndarray) -> np.ndarray:
-    """256 级灰度直方图（归一化为概率）。"""
+    """Normalized 256-level grayscale histogram."""
     values = np.clip(np.rint(img), 0, 255).astype(np.int64).ravel()
     return np.bincount(values, minlength=256).astype(np.float64) / values.size
 
 
 def _blkproc_sum_pow(x: np.ndarray, block: int, power: float) -> np.ndarray:
-    """按 block×block 分块求幂和（Qcv 的局部显著度用）。
-
-    不足一块的右/下边缘零填充。
-    """
+    """Block-wise power sums (Qcv saliency); right/bottom edges zero-padded."""
     rows, cols = x.shape
     pr, pc = (-rows) % block, (-cols) % block
     if pr or pc:
@@ -189,7 +150,7 @@ def _blkproc_sum_pow(x: np.ndarray, block: int, power: float) -> np.ndarray:
 
 
 def _blkproc_mean_square(x: np.ndarray, block: int) -> np.ndarray:
-    """按 block×block 分块求均方值（Qcv 的局部失真用）。"""
+    """Block-wise mean squares (Qcv distortion)."""
     rows, cols = x.shape
     pr, pc = (-rows) % block, (-cols) % block
     if pr or pc:
@@ -200,17 +161,10 @@ def _blkproc_mean_square(x: np.ndarray, block: int) -> np.ndarray:
 
 
 def _vifb_metric(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray, single) -> float:
-    """单通道指标的多通道适配器。
+    """Adapt a single-channel metric to multi-channel inputs.
 
-    约定：**红外恒为单通道**；融合图为灰度时直接调用；为 RGB 时
-    逐通道调用后取平均。各 *_single 指标经由本函数包装成对外接口。
-
-    参数:
-        vi, ir, fused: 输入图（vi 可为 3 通道，ir 单通道）。
-        single: 单通道指标函数。
-
-    返回:
-        标量指标值。
+    Infrared is always single-channel; RGB fused images are evaluated per
+    channel and averaged.
     """
     b = 1 if fused.ndim == 2 else fused.shape[2]
     b1 = 1 if ir.ndim == 2 else ir.shape[2]
@@ -223,13 +177,13 @@ def _vifb_metric(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray, single) -> f
     return float(np.mean(vals))
 
 def _en_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """EN 熵：融合图灰度直方图的 Shannon 熵（bit）。越高信息量越大。"""
+    """EN: Shannon entropy of the fused histogram (bits)."""
     p = _hist256(fused)
     p = p[p > 0]
     return float(-np.sum(p * np.log2(p)))
 
 def _ce_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """CE 交叉熵：源图与融合图交叉熵的平均（越低越好）。"""
+    """CE: mean cross entropy of the sources against the fused image (lower is better)."""
     def ce_pair(a: np.ndarray, f: np.ndarray) -> float:
         p1, p2 = _hist256(_maybe_gray(a)), _hist256(_maybe_gray(f))
         mask = (p1 > 0) & (p2 > 0)
@@ -238,12 +192,10 @@ def _ce_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
     return (ce_pair(vi, fused) + ce_pair(ir, fused)) / 2.0
 
 def _mi_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """MI 互信息（**协议怪癖：自然对数**）。
+    """MI: mutual information, summed over both sources.
 
-    每张图先 min-max 归一化并量化到 256 级，再从 256×256 联合
-    直方图估计互信息；结果为 vi-fused 与 ir-fused 两项之和。
-    注意用的是 ln 而非 log2——与多数文献实现不同，系历史实现
-    遗留，勿改。
+    Protocol quirk: computed on 256-level joint histograms with *natural*
+    logs, not log2. Do not change.
     """
     def mi_pair(a: np.ndarray, b: np.ndarray) -> float:
         def norm(x: np.ndarray) -> np.ndarray:
@@ -251,51 +203,47 @@ def _mi_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
             return (x - lo) / (hi - lo) if hi != lo else np.zeros_like(x)
         ai = np.clip(_matlab_round(norm(_maybe_gray(a)) * 255.0), 0, 255).astype(np.int64).ravel()
         bi = np.clip(_matlab_round(norm(_maybe_gray(b)) * 255.0), 0, 255).astype(np.int64).ravel()
-        # 联合直方图：ai*256+bi 编码到一维再还原
+        # joint histogram encoded as ai * 256 + bi
         joint = np.bincount(ai * 256 + bi, minlength=256 * 256).reshape(256, 256).astype(np.float64)
         p_joint = joint / joint.sum()
         ha = np.bincount(ai, minlength=256).astype(np.float64); ha /= ha.sum()
         hb = np.bincount(bi, minlength=256).astype(np.float64); hb /= hb.sum()
         hab = p_joint[p_joint > 0]
         ha_n, hb_n = ha[ha > 0], hb[hb > 0]
-        # I(A;B) = H(A) + H(B) - H(A,B)，全部用自然对数
+        # I(A;B) = H(A) + H(B) - H(A,B), natural logs throughout
         return float(-np.sum(ha_n * np.log(ha_n)) - np.sum(hb_n * np.log(hb_n)) + np.sum(hab * np.log(hab)))
     return mi_pair(vi, fused) + mi_pair(ir, fused)
 
 def _mse_quirk(a: np.ndarray, b: np.ndarray) -> float:
-    """本协议的"伪 MSE"：sqrt(SSE) / (m·n)。
+    """Protocol quirk: ``sqrt(SSE) / (m * n)`` — far below standard RMSE.
 
-    **协议怪癖**：常规 RMSE 是 sqrt(SSE/(m·n))，这里多除了一次
-    (m·n)。数值因此远小于常规 RMSE，PSNR 也随之偏高。此约定是
-    calibfuse-metrics-v1 协议的一部分，本项目所有数值都基于它，勿改。
+    Part of calibfuse-metrics-v1; PSNR/RMSE values depend on it. Do not
+    change.
     """
     m, n = a.shape
     return float(math.sqrt(np.sum((a - b) ** 2)) / (m * n))
 
 
 def _psnr_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """PSNR：两个源方向的 _mse_quirk 取平均后代入 20·log10(255/rmse)。
-
-    完全相同时返回 inf。
-    """
+    """PSNR from the averaged quirk MSE of both source directions."""
     mes = (_mse_quirk(_maybe_gray(vi), _maybe_gray(fused)) + _mse_quirk(_maybe_gray(ir), _maybe_gray(fused))) / 2.0
     return float("inf") if mes == 0 else float(20.0 * math.log10(255.0 / math.sqrt(mes)))
 
 
 def _rmse_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """RMSE：两个源方向的 _mse_quirk 平均（见 _mse_quirk 的怪癖说明）。"""
+    """RMSE from the averaged quirk MSE of both source directions."""
     return (_mse_quirk(_maybe_gray(vi), _maybe_gray(fused)) + _mse_quirk(_maybe_gray(ir), _maybe_gray(fused))) / 2.0
 
 
 def _ag_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """AG 平均梯度：梯度幅值（dx²+dy²)/2 开方）总和 / ((H-1)(W-1))。"""
+    """AG: average gradient."""
     dy, dx = np.gradient(fused)
     s = np.sqrt((dx * dx + dy * dy) / 2.0)
     return float(np.sum(s) / ((fused.shape[0] - 1) * (fused.shape[1] - 1)))
 
 
 def _ei_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """EI 边缘强度：Sobel 梯度幅值的均值。"""
+    """EI: mean Sobel gradient magnitude."""
     w = np.array([[1.0, 2.0, 1.0], [0.0, 0.0, 0.0], [-1.0, -2.0, -1.0]])
     gx = _imfilter_replicate(fused, w)
     gy = _imfilter_replicate(fused, w.T)
@@ -303,20 +251,13 @@ def _ei_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
 
 
 def _qabf_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """Qabf：基于边缘强度与方向的融合质量（Xydeas-Živković）。
+    """Qabf (Xydeas-Zivkovic): gradient-based fusion quality.
 
-    对每个源计算 Sobel 梯度 g 与角度 a，用 sigmoid 形的 qg/qa
-    评价融合图对源边缘"强度比"与"方向对齐"的保持度，再按源梯度
-    加权平均。
-
-    **协议怪癖**：保留了"梯度相等"分支 ``ratio = g_f``
-    （常规实现多取 1）；以及 |gx|<1e-6 直接置 0（影响角度计算
-    的零点处理）。
+    Protocol quirks: the equal-gradient branch keeps ``ratio = g_f``
+    (common implementations use 1), and gradients below 1e-6 are zeroed.
     """
-    # 两个 Sobel 核（h1=纵向差分，h3=横向差分）
     h1 = np.array([[1.0, 2.0, 1.0], [0.0, 0.0, 0.0], [-1.0, -2.0, -1.0]])
     h3 = np.array([[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]])
-    # sigmoid 参数：强度与方向的评价曲线拐点/斜率（历史常用值）
     tg, kg, dg = 0.9994, -15.0, 0.5
     ta, ka, da = 0.9879, -22.0, 0.8
 
@@ -326,20 +267,19 @@ def _qabf_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
         gx[np.abs(gx) < 1e-6] = 0.0
         gy[np.abs(gy) < 1e-6] = 0.0
         g = np.sqrt(gx * gx + gy * gy)
-        # 默认角度 π/2（gx=0 时），否则 arctan(gy/gx)
+        # angle defaults to pi/2 where gx == 0
         ang = np.full(gx.shape, math.pi / 2.0)
         nz = gx != 0
         ang[nz] = np.arctan(gy[nz] / gx[nz])
         return g, ang
 
     def quality(g_s: np.ndarray, a_s: np.ndarray, g_f: np.ndarray, a_f: np.ndarray) -> np.ndarray:
-        # 强度比：g_s>g_f 时取 g_f/g_s，反之取倒数——衡量幅值保持
+        # strength ratio measures how well the fused magnitude matches the source
         ratio = np.zeros_like(g_s)
         gt, eq, lt = g_s > g_f, g_s == g_f, g_s < g_f
         ratio[gt] = g_f[gt] / g_s[gt]
-        ratio[eq] = g_f[eq]  # 历史分支：相等时直接用 g_f（而非 1）
+        ratio[eq] = g_f[eq]  # historical branch: equal gradients use g_f, not 1
         ratio[lt] = g_s[lt] / g_f[lt]
-        # 方向对齐度：角度差归一到 [0,1]
         align = 1.0 - np.abs(a_s - a_f) / (math.pi / 2.0)
         qg = tg / (1.0 + np.exp(kg * (ratio - dg)))
         qa = ta / (1.0 + np.exp(ka * (align - da)))
@@ -350,16 +290,12 @@ def _qabf_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
     gf, af = sobel(fused)
     qa = quality(ga, aa, gf, af)
     qb = quality(gb, ab, gf, af)
-    # 按源梯度强度加权平均两个方向的质量
+    # quality weighted by source gradient strength
     return float(np.sum(qa * ga + qb * gb) / np.sum(ga + gb))
 
 
 def _scd_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """SCD：源与"差分互补图"的相关系数之和（Haghighat-Resetti）。
-
-    corr(a, f - b) 衡量融合图相对另一源新增的信息与源 a 的相关性，
-    两个方向求和；满分约 2。
-    """
+    """SCD: sum of correlations of each source with the difference image (Haghighat-Resetti)."""
     def corr(x: np.ndarray, y: np.ndarray) -> float:
         x, y = x - x.mean(), y - y.mean()
         denominator = math.sqrt(np.sum(x * x) * np.sum(y * y))
@@ -370,12 +306,12 @@ def _scd_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
 
 
 def _sd_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """SD 标准差：融合图灰度总体标准差，衡量对比度。"""
+    """SD: standard deviation of the fused image (contrast)."""
     return float(np.sqrt(np.sum((fused - fused.mean()) ** 2) / fused.size))
 
 
 def _sf_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """SF 空间频率：行/列差分能量（各除以 m·n）开方。"""
+    """SF: spatial frequency from row/column difference energies."""
     m, n = fused.shape
     rf = np.sum((fused[:, 1:] - fused[:, :-1]) ** 2) / (m * n)
     cf = np.sum((fused[1:, :] - fused[:-1, :]) ** 2) / (m * n)
@@ -383,16 +319,11 @@ def _sf_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
 
 
 def _ssim_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """SSIM（**协议怪癖：两源求和，可超过 1**）。
-
-    标准 11x11 高斯窗（σ=1.5）、C1/C2 取 (0.01·255)²/(0.03·255)²，
-    逐窗计算后整图平均；结果是 ssim(vi,f) + ssim(ir,f)。
-    """
+    """SSIM; protocol quirk: sums both source scores, so it can exceed 1."""
     def ssim_pair(a: np.ndarray, b: np.ndarray) -> float:
         w = _gaussian_window(11, 1.5)
         c1, c2 = (0.01 * 255.0) ** 2, (0.03 * 255.0) ** 2
         a, b = _maybe_gray(a), _maybe_gray(b)
-        # 高斯窗加权局部统计（相关实现）
         ua, ub = _filter2_valid(a, w), _filter2_valid(b, w)
         ua_ub = ua * ub
         sig_a = _filter2_valid(a * a, w) - ua * ua
@@ -407,30 +338,24 @@ def _ssim_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
 
 
 def _qcb_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """Qcb（Chen-Blum 2009 感知协议）。
-
-    流程：CSF 频域滤波（DoG 形对比敏感度函数）→ 局部对比度
-    （两个 σ 的高斯 DoG）→ 对比度 pooling（幂律压缩）→ 源显著度
-    加权平均两个方向的保持度 q。
-    """
+    """Qcb (Chen-Blum 2009): CSF filtering -> local contrast -> pooled distortion."""
     im1, im2, imf = _normalize255(_maybe_gray(vi)), _normalize255(_maybe_gray(ir)), _normalize255(_maybe_gray(fused))
 
-    # CSF 参数（Chen-Blum 论文值）：f0/f1 频点、a_csf 负瓣深度
+    # CSF parameters from the Chen-Blum paper
     f0, f1, a_csf = 15.3870, 1.3456, 0.7622
     k, h_c, p, q, z = 1.0, 1.0, 3.0, 2.0, 0.0001
     rows, cols = im1.shape
-    # 归一化频率网格的纵横尺度
     hh, ll = rows / 30.0, cols / 30.0
     u, v = _freqspace_meshgrid(rows, cols)
     r = np.sqrt((ll * u) ** 2 + (hh * v) ** 2)
-    # CSF = 两个高斯的差（band-pass）
+    # band-pass CSF: difference of two Gaussians
     sd = np.exp(-(r / f0) ** 2) - a_csf * np.exp(-(r / f1) ** 2)
 
     def csf_filter(im: np.ndarray) -> np.ndarray:
         spec = np.fft.fftshift(np.fft.fft2(im)) * sd
         return np.fft.ifft2(np.fft.ifftshift(spec)).real
 
-    # 两个尺度的 31x31 高斯（σ=2 / σ=4），构成 DoG 对比度探测
+    # DoG contrast detection: Gaussians at sigma 2 and 4
     g1, g2 = _gaussian2d_31(2.0), _gaussian2d_31(4.0)
 
     def contrast(im: np.ndarray) -> np.ndarray:
@@ -440,27 +365,23 @@ def _qcb_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
         c = np.abs(contrast(csf_filter(im)))
         return (k * c ** p) / (h_c * c ** q + z)
 
-    # 除零容忍：0/0 产生 NaN 的位置在掩码选择后不进入均值（下同）
+    # 0/0 NaN positions never enter the weighted mean below
     with np.errstate(divide="ignore", invalid="ignore"):
         c1p, c2p, cfp = c_pooled(im1), c_pooled(im2), c_pooled(imf)
-        # 每个方向取较小/较大比值（保持度 ∈ (0,1]）
+        # preservation per direction: smaller/larger ratio keeps values in (0, 1]
         mask = c1p < cfp
         q1f = (c1p / cfp) * mask + (cfp / c1p) * (~mask)
         mask = c2p < cfp
         q2f = (c2p / cfp) * mask + (cfp / c2p) * (~mask)
 
-    # 显著度权重：各源 pooled 对比度的归一化占比
+    # saliency weights: normalized shares of pooled contrast
     ramda1 = (c1p * c1p) / (c1p * c1p + c2p * c2p)
     ramda2 = (c2p * c2p) / (c1p * c1p + c2p * c2p)
     return float(np.mean(ramda1 * q1f + ramda2 * q2f))
 
 
 def _qcv_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """Qcv（Chen-Varma 加权失真协议，越低越好）。
-
-    以各源梯度显著度（16x16 块、5 次幂）为权重，加权平均融合图
-    与每个源经 CSF 滤波后的块均方差。
-    """
+    """Qcv (Chen-Varma): saliency-weighted CSF-filtered block distortion (lower is better)."""
     im1, im2, imf = _normalize255(_maybe_gray(vi)), _normalize255(_maybe_gray(ir)), _normalize255(_maybe_gray(fused))
 
     flt1 = np.array([[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]])
@@ -470,7 +391,7 @@ def _qcv_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
         gx, gy = _filter2_same(im, flt1), _filter2_same(im, flt2)
         return np.sqrt(gx * gx + gy * gy)
 
-    # 分块窗口 16、显著度幂 5
+    # block window 16, saliency power 5
     window, alpha = 16, 5
     ramda1 = _blkproc_sum_pow(grad_mag(im1), window, alpha)
     ramda2 = _blkproc_sum_pow(grad_mag(im2), window, alpha)
@@ -479,31 +400,30 @@ def _qcv_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
     u, v = _freqspace_meshgrid(rows, cols)
     r = np.sqrt((cols / 8.0 * u) ** 2 + (rows / 8.0 * v) ** 2)
 
-    # 人眼调制传递函数（Chen-Varma 论文式）
+    # human modulation transfer function (Chen-Varma)
     theta_m = 2.6 * (0.0192 + 0.144 * r) * np.exp(-((0.144 * r) ** 1.1))
 
     def csf_filter(diff: np.ndarray) -> np.ndarray:
         spec = np.fft.fftshift(np.fft.fft2(diff)) * theta_m
         return np.fft.ifft2(np.fft.ifftshift(spec)).real
 
-    # 失真 = 源与融合图之差经 CSF 后的分块均方
+    # distortion = block mean square of the CSF-filtered source difference
     d1 = _blkproc_mean_square(csf_filter(im1 - imf), window)
     d2 = _blkproc_mean_square(csf_filter(im2 - imf), window)
     return float(np.sum(ramda1 * d1 + ramda2 * d2) / np.sum(ramda1 + ramda2))
 
 
 def _vif_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
-    """VIF 视觉信息保真度（Sheikh-Bovik，**协议怪癖：两源求和**）。
+    """VIF (Sheikh-Bovik); protocol quirk: sums both source scores.
 
-    标准 4 尺度实现：每尺度用高斯窗估计局部均值/方差/协方差，
-    计算 g（增益）与 sv_sq（残差噪声），累加 log10 的信息比；
-    尺度间对图 2 倍降采样。结果 = vif(vi→fused) + vif(ir→fused)。
+    Standard 4-scale implementation with Gaussian-window local statistics
+    and 2x downsampling between scales.
     """
     def gaussian_kernel(size: int, sigma: float) -> np.ndarray:
         radius = (size - 1) / 2.0
         y, x = np.ogrid[-radius:radius + 1, -radius:radius + 1]
         kernel = np.exp(-(x * x + y * y) / (2 * sigma * sigma))
-        # 过小的权重截断为 0（MATLAB fspecial 同款做法）
+        # truncate tiny weights, matching MATLAB fspecial
         kernel[kernel < np.finfo(kernel.dtype).eps * kernel.max()] = 0
         total = kernel.sum()
         return kernel / total if total != 0 else kernel
@@ -515,26 +435,24 @@ def _vif_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
         num = den = 0.0
         ref, dist = reference.copy(), distorted.copy()
         for scale in range(1, 5):
-            # 尺度越大窗口越小；σ = N/5（标准 VIF 设置）
             N = 2 ** (5 - scale) + 1
             win = np.rot90(gaussian_kernel(N, N / 5.0), 2)
             if scale > 1:
-                # 非首个尺度：先 valid 低通再 2 倍抽取
+                # low-pass, then decimate by 2
                 ref = _conv2(ref, win, "valid")[::2, ::2]
                 dist = _conv2(dist, win, "valid")[::2, ::2]
-            # 局部统计（相关实现）
             mu1 = _conv2(ref, win, "valid")
             mu2 = _conv2(dist, win, "valid")
             sigma1_sq = _conv2(ref * ref, win, "valid") - mu1 * mu1
             sigma2_sq = _conv2(dist * dist, win, "valid") - mu2 * mu2
             sigma12 = _conv2(ref * dist, win, "valid") - mu1 * mu2
-            # 数值防御：负方差截零
+            # guard against negative variances from numerical error
             sigma1_sq[sigma1_sq < 0] = 0
             sigma2_sq[sigma2_sq < 0] = 0
             g = sigma12 / (sigma1_sq + eps)
             sv_sq = sigma2_sq - g * sigma12
 
-            # 退化区域掩码处理（标准 VIF 的分支逻辑）
+            # degenerate-region handling (standard VIF branches)
             mask = sigma1_sq < eps
             g[mask], sv_sq[mask], sigma1_sq[mask] = 0, sigma2_sq[mask], 0
             mask = sigma2_sq < eps
@@ -553,13 +471,13 @@ def _vif_single(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
 
 
 def _make_metric(single):
-    """把单通道指标包装成支持 RGB 融合图的多通道入口。"""
+    """Wrap a single-channel metric into a multi-channel-capable entry point."""
     def metric(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray) -> float:
         return _vifb_metric(vi, ir, fused, single)
     return metric
 
 
-# —— 对外指标接口（RGB 融合图自动逐通道适配）——
+# Public metric entry points (RGB fused images are handled per channel).
 EN = _make_metric(_en_single)
 CE = _make_metric(_ce_single)
 MI = _make_metric(_mi_single)
@@ -583,15 +501,5 @@ METRIC_FUNCS = {
 }
 
 def evaluate(vi: np.ndarray, ir: np.ndarray, fused: np.ndarray, metrics: tuple[str, ...]) -> dict[str, float]:
-    """计算指定的指标集合。
-
-    参数:
-        vi: 可见光源图（灰度或 RGB，float64 0~255）。
-        ir: 红外源图（单通道）。
-        fused: 融合结果（灰度或 RGB）。
-        metrics: 指标名元组（须在 METRIC_FUNCS 中）。
-
-    返回:
-        ``{指标名: 数值}`` 字典。
-    """
+    """Compute the requested metrics; returns ``{name: value}``."""
     return {name: METRIC_FUNCS[name](vi, ir, fused) for name in metrics}
