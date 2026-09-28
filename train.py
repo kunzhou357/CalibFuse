@@ -19,8 +19,8 @@ fusion previews), and ``log.txt`` (per-epoch statistics).
 Invariants enforced here:
 1. Workers are recreated each epoch after ``set_epoch`` so per-image noise
    seeds never repeat; checkpoints without this policy are rejected.
-2. Resume rejects fine-tuning runs and requires the stored hyperparameters
-   to match the command line.
+2. Resume requires the stored hyperparameters to match the command line and
+   restores the saved RNG state so training continues identically.
 3. An existing ``latest.pth`` without --resume is an error.
 """
 
@@ -116,17 +116,36 @@ class CleanEMA:
         self.updates = int(state["updates"])
 
 
+def snapshot_rng() -> dict:
+    """Capture all global RNG states so a resumed run continues identically."""
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+
+
+def restore_rng(state: dict) -> None:
+    """Restore RNG states captured by :func:`snapshot_rng`."""
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    if state.get("cuda") and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
 def save_checkpoint(path: Path, model: CalibFuse, ema: CleanEMA, optimizer,
                     scheduler, scaler, epoch: int, stats: dict[str, float], args: argparse.Namespace) -> None:
-    """Save a full training checkpoint (weights, states, and an args snapshot)."""
+    """Save a full training checkpoint (weights, states, RNG, and args)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
         "format": CHECKPOINT_FORMAT, "epoch": epoch, "stats": stats,
         "data_epoch_policy": DATA_EPOCH_POLICY,
-        "training_epoch_offset": getattr(model, "training_epoch_offset", 0),
         "model_config": model.config, "model": model.state_dict(), "ema": ema.state_dict(),
         "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
         "scaler": scaler.state_dict() if scaler is not None else None,
+        "rng": snapshot_rng(),
         # paths are stored as strings so the payload stays portable
         "train_args": {key: str(value) if isinstance(value, Path) else value
                        for key, value in vars(args).items()},
@@ -135,8 +154,12 @@ def save_checkpoint(path: Path, model: CalibFuse, ema: CleanEMA, optimizer,
 
 def load_checkpoint(path: Path, model: CalibFuse, ema: CleanEMA, optimizer,
                     scheduler, scaler, device: torch.device) -> int:
-    """Restore the full training state; returns the start epoch (stored + 1)."""
-    payload = torch.load(path, map_location=device, weights_only=False)
+    """Restore the full training state; returns the start epoch (stored + 1).
+
+    Loads on CPU (optimizer and scheduler states are recast to their parameter
+    devices automatically) and restores the saved RNG states when present.
+    """
+    payload = torch.load(path, map_location="cpu", weights_only=False)
     if payload.get("format") != CHECKPOINT_FORMAT:
         raise ValueError(f"incompatible checkpoint format: {payload.get('format')!r}")
     if payload.get("data_epoch_policy") != DATA_EPOCH_POLICY:
@@ -148,6 +171,8 @@ def load_checkpoint(path: Path, model: CalibFuse, ema: CleanEMA, optimizer,
     scheduler.load_state_dict(payload["scheduler"])
     if scaler is not None and payload.get("scaler") is not None:
         scaler.load_state_dict(payload["scaler"])
+    if payload.get("rng") is not None:
+        restore_rng(payload["rng"])
     return int(payload["epoch"]) + 1
 
 
@@ -182,8 +207,9 @@ def train_epoch(model: CalibFuse, ema: CleanEMA, loader: DataLoader,
                 max_batches: int | None = None) -> dict[str, float]:
     """Train one epoch; returns sample-weighted mean loss statistics."""
     model.train()
-    # the budget ramp uses total progress epochs so warm starts stay continuous
-    model.set_training_progress(epoch + getattr(model, "training_epoch_offset", 0))
+    # keep the budget ramp in sync on student and teacher so previews match
+    model.set_training_progress(epoch)
+    ema.model.set_training_progress(epoch)
     totals: dict[str, float] = {}
     samples = 0
     progress = tqdm(loader, desc=f"train {epoch + 1:03d}/{epochs}", ncols=100)
@@ -248,8 +274,9 @@ def main() -> None:
     amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "none": None}[args.amp]
     if device.type == "cuda" and amp_dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
         raise RuntimeError("This CUDA device does not support bf16; use --amp fp16")
-    # GradScaler is only needed for fp16
-    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and amp_dtype == torch.float16)
+    # GradScaler exists only for fp16; bf16 and no-AMP backpropagate directly
+    scaler = (torch.amp.GradScaler("cuda")
+              if device.type == "cuda" and amp_dtype == torch.float16 else None)
 
     pairs = paired_paths(args.data)
     if len(pairs) < 4:
@@ -260,12 +287,9 @@ def main() -> None:
     loader = make_train_loader(dataset, sampler, args.workers, device)
     model = CalibFuse().to(device)
     if args.resume:
-        # reject fine-tuning runs and require the stored hyperparameters to match
+        # resuming must preserve the training configuration
         resumed = torch.load(args.resume, map_location="cpu", weights_only=False)
         resume_args = resumed.get("train_args", {})
-        if (resume_args.get("finetune") or resumed.get("training_epoch_offset", 0) != 0
-                or resume_args.get("structure_weight", 1.0) != 1.0):
-            raise ValueError("The trainer cannot resume a fine-tuning run")
         for key in ("epochs", "batch_size", "crop_size", "lr", "min_lr", "weight_decay", "seed", "amp"):
             if key in resume_args and getattr(args, key) != resume_args[key]:
                 raise ValueError(f"Resume must preserve --{key.replace('_', '-')}: {resume_args[key]}")
@@ -283,6 +307,8 @@ def main() -> None:
                               "or explicitly resume a checkpoint created after the epoch fix")
     preview_dir = args.output / "previews"
     preview_dir.mkdir(exist_ok=True)
+    # single-process preview loader: same sampler and epoch, no worker respawn
+    preview_loader = DataLoader(dataset, batch_sampler=sampler, num_workers=0)
     print(f"device={device} amp={args.amp} pairs={len(pairs)} batches={len(loader)} "
           f"parameters={sum(parameter.numel() for parameter in model.parameters()):,}")
 
@@ -294,17 +320,18 @@ def main() -> None:
         stats = train_epoch(model, ema, loader, criterion, optimizer, scaler,
                             device, amp_dtype, epoch, args.epochs, args.max_batches)
         scheduler.step()
-        save_checkpoint(args.output / "latest.pth", model, ema, optimizer, scheduler,
-                        scaler, epoch, stats, args)
-        if (epoch + 1) % 10 == 0:
-            save_checkpoint(args.output / f"epoch_{epoch + 1:03d}.pth", model, ema, optimizer,
-                            scheduler, scaler, epoch, stats, args)
-        preview_batch = move_batch(next(iter(loader)), device)
+        preview_batch = move_batch(next(iter(preview_loader)), device)
         ema.model.eval()
         with torch.inference_mode():
             preview = ema.model(preview_batch["visible_observed"],
                                 preview_batch["infrared_observed"])["fused"]
         save_tensor(preview_dir / f"epoch_{epoch + 1:03d}.png", preview)
+        # save after the preview so the stored RNG state covers the full epoch
+        save_checkpoint(args.output / "latest.pth", model, ema, optimizer, scheduler,
+                        scaler, epoch, stats, args)
+        if (epoch + 1) % 10 == 0:
+            save_checkpoint(args.output / f"epoch_{epoch + 1:03d}.pth", model, ema, optimizer,
+                            scheduler, scaler, epoch, stats, args)
         line = (f"epoch={epoch + 1:03d} total={stats['total']:.5f} fusion={stats['fusion']:.5f} "
                 f"recovery={stats['recovery']:.5f} anchor={stats['anchor']:.5f} "
                 f"calib={stats['adoption'] + stats['error_calibration'] + stats['interaction']:.5f} "
