@@ -2,7 +2,8 @@
 
 Usage::
 
-    python infer.py --data datasets/test_noise --output results/inference
+    python infer.py                 # zero arguments: uses the config block below
+    python infer.py --data datasets/test_M3FD --max-images 4   # one-off override
 
 Outputs (under --output):
 - ``rgb/<stem>.png``: fused RGB image;
@@ -10,10 +11,9 @@ Outputs (under --output):
 - ``protocol.json``: run provenance (checkpoint path and SHA-256, epoch,
   weight selection, device, sample list).
 
-Defaults to the EMA weights of ``checkpoints/calibfuse.pth``; pass
-``--checkpoint checkpoints/train/latest.pth`` to evaluate a fresh run.
-Use ``--max-images`` for quick local checks (a full-resolution image takes
-~40 s on CPU).
+All defaults live in the config block right below the imports — edit the
+file instead of typing CLI arguments. Command-line flags still override
+them when needed (a full-resolution image takes ~40 s on CPU).
 """
 from __future__ import annotations
 
@@ -28,16 +28,33 @@ from utils.checkpoint import load_model, sha256_file
 from utils.dataset import load_image, paired_paths
 from utils.image import luminance, save_tensor
 
+# ===================== defaults: edit here, no CLI needed =====================
+# Data folder: needs vis/ (or visible/vi) and ir/ (or infrared/inf) subfolders;
+# pairs are matched by filename stem.
+DATA = Path("datasets/test")
+# Weight file: your own training output is checkpoints/train/latest.pth;
+# switch to checkpoints/calibfuse.pth if you place released weights there.
+CHECKPOINT = Path("ckpt/model.pth")
+# Output folder: results go to <OUTPUT>/rgb and <OUTPUT>/gray.
+OUTPUT = Path("results/test")
+# Device: "cuda" (default) or "cpu".
+DEVICE = "cuda"
+# Weights: "ema" (default, more stable) or "model" (final student weights).
+WEIGHTS = "ema"
+# Fuse only the first N images for a quick check; None = all images.
+MAX_IMAGES = None
+# =============================================================================
+
 
 def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
+    """Parse CLI overrides; every flag defaults to the config block above."""
     parser = argparse.ArgumentParser(description="Fuse paired images with CalibFuse")
-    parser.add_argument("--data", type=Path, required=True, help="Folder containing vis/ and ir/")
-    parser.add_argument("--checkpoint", type=Path, default=Path("checkpoints/calibfuse.pth"))
-    parser.add_argument("--output", type=Path, default=Path("results/inference"))
-    parser.add_argument("--device", choices=("cuda", "cpu", "mps"), default="cuda")
-    parser.add_argument("--weights", choices=("ema", "model"), default="ema")
-    parser.add_argument("--max-images", type=int)
+    parser.add_argument("--data", type=Path, default=DATA, help="Folder containing vis/ and ir/")
+    parser.add_argument("--checkpoint", type=Path, default=CHECKPOINT)
+    parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument("--device", choices=("cuda", "cpu", "mps"), default=DEVICE)
+    parser.add_argument("--weights", choices=("ema", "model"), default=WEIGHTS)
+    parser.add_argument("--max-images", type=int, default=MAX_IMAGES)
     return parser.parse_args()
 
 

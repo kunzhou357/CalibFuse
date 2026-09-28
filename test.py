@@ -39,12 +39,12 @@ METRICS = ("EN", "SF", "MI", "SCD", "VIF", "Qabf", "SSIM")
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Evaluate the CalibFuse fusion model")
-    parser.add_argument("--data", type=Path, default=Path("datasets/test_noise"),
+    parser.add_argument("--data", type=Path, default=Path("datasets/test"),
                         help="Observed vis/ir inputs")
     parser.add_argument("--reference", type=Path, default=Path("datasets/test"),
                         help="Clean vis/ir references with matching stems")
-    parser.add_argument("--checkpoint", type=Path, default=Path("checkpoints/calibfuse.pth"))
-    parser.add_argument("--output", type=Path, default=Path("results/test_noise"))
+    parser.add_argument("--checkpoint", type=Path, default=Path("ckpt/MSRS_Model.pth"))
+    parser.add_argument("--output", type=Path, default=Path("results/test"))
     parser.add_argument("--device", choices=("cuda", "cpu", "mps"), default="cuda")
     parser.add_argument("--weights", choices=("ema", "model"), default="ema")
     parser.add_argument("--max-images", type=int,
