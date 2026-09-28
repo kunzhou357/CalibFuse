@@ -75,6 +75,43 @@ SSIM and VIF sum the two source scores, and PSNR/RMSE use a
 `sqrt(SSE)/(m·n)` denominator. Do not compare these numbers directly with
 other evaluators.
 
+## Fusion results
+
+Outputs of the released `ckpt/model.pth` (EMA weights) on MSRS, M3FD, and
+LLVIP test pairs. The degraded examples use the fixed `test_noise` inputs:
+Poisson shot/read noise on the visible channel; striping, Gaussian noise,
+and stuck pixels on infrared.
+
+### MSRS
+
+| Visible | Infrared | Fused |
+|:---:|:---:|:---:|
+| <img src="assets/results/msrs_00004N_vis.png" width="260" alt="MSRS 00004N visible"> | <img src="assets/results/msrs_00004N_ir.png" width="260" alt="MSRS 00004N infrared"> | <img src="assets/results/msrs_00004N_fused.png" width="260" alt="MSRS 00004N fused"> |
+| <img src="assets/results/msrs_00024N_vis.png" width="260" alt="MSRS 00024N visible"> | <img src="assets/results/msrs_00024N_ir.png" width="260" alt="MSRS 00024N infrared"> | <img src="assets/results/msrs_00024N_fused.png" width="260" alt="MSRS 00024N fused"> |
+| <img src="assets/results/msrs_00123D_vis.png" width="260" alt="MSRS 00123D visible"> | <img src="assets/results/msrs_00123D_ir.png" width="260" alt="MSRS 00123D infrared"> | <img src="assets/results/msrs_00123D_fused.png" width="260" alt="MSRS 00123D fused"> |
+| <img src="assets/results/msrs_00634D_vis.png" width="260" alt="MSRS 00634D visible"> | <img src="assets/results/msrs_00634D_ir.png" width="260" alt="MSRS 00634D infrared"> | <img src="assets/results/msrs_00634D_fused.png" width="260" alt="MSRS 00634D fused"> |
+
+### Degraded inputs (MSRS with synthetic sensor noise)
+
+| Visible (noisy) | Infrared (noisy) | Fused |
+|:---:|:---:|:---:|
+| <img src="assets/results/noise_00004N_vis.png" width="260" alt="Noisy MSRS 00004N visible"> | <img src="assets/results/noise_00004N_ir.png" width="260" alt="Noisy MSRS 00004N infrared"> | <img src="assets/results/noise_00004N_fused.png" width="260" alt="Fused noisy MSRS 00004N"> |
+| <img src="assets/results/noise_00123D_vis.png" width="260" alt="Noisy MSRS 00123D visible"> | <img src="assets/results/noise_00123D_ir.png" width="260" alt="Noisy MSRS 00123D infrared"> | <img src="assets/results/noise_00123D_fused.png" width="260" alt="Fused noisy MSRS 00123D"> |
+
+### M3FD
+
+| Visible | Infrared | Fused |
+|:---:|:---:|:---:|
+| <img src="assets/results/m3fd_00011_vis.png" width="260" alt="M3FD 00011 visible"> | <img src="assets/results/m3fd_00011_ir.png" width="260" alt="M3FD 00011 infrared"> | <img src="assets/results/m3fd_00011_fused.png" width="260" alt="M3FD 00011 fused"> |
+
+### LLVIP
+
+| Visible | Infrared | Fused |
+|:---:|:---:|:---:|
+| <img src="assets/results/llvip_260284_vis.jpg" width="260" alt="LLVIP 260284 visible"> | <img src="assets/results/llvip_260284_ir.jpg" width="260" alt="LLVIP 260284 infrared"> | <img src="assets/results/llvip_260284_fused.png" width="260" alt="LLVIP 260284 fused"> |
+| <img src="assets/results/llvip_260314_vis.jpg" width="260" alt="LLVIP 260314 visible"> | <img src="assets/results/llvip_260314_ir.jpg" width="260" alt="LLVIP 260314 infrared"> | <img src="assets/results/llvip_260314_fused.png" width="260" alt="LLVIP 260314 fused"> |
+| <img src="assets/results/llvip_260494_vis.jpg" width="260" alt="LLVIP 260494 visible"> | <img src="assets/results/llvip_260494_ir.jpg" width="260" alt="LLVIP 260494 infrared"> | <img src="assets/results/llvip_260494_fused.png" width="260" alt="LLVIP 260494 fused"> |
+
 ## Development
 
 ```bash
