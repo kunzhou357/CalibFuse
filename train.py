@@ -42,8 +42,7 @@ from nets.fusion import CalibFuse
 from utils.dataset import PairedFusionDataset, QualityBalancedBatchSampler, paired_paths
 from utils.image import save_tensor
 from utils.loss import CalibFuseLoss
-from utils.checkpoint import (CHECKPOINT_FORMAT, DATA_EPOCH_POLICY,
-                              require_supported_format)
+from utils.checkpoint import CHECKPOINT_FORMAT, DATA_EPOCH_POLICY
 
 
 def parse_args() -> argparse.Namespace:
@@ -138,7 +137,8 @@ def load_checkpoint(path: Path, model: CalibFuse, ema: CleanEMA, optimizer,
                     scheduler, scaler, device: torch.device) -> int:
     """Restore the full training state; returns the start epoch (stored + 1)."""
     payload = torch.load(path, map_location=device, weights_only=False)
-    require_supported_format(payload)
+    if payload.get("format") != CHECKPOINT_FORMAT:
+        raise ValueError(f"incompatible checkpoint format: {payload.get('format')!r}")
     if payload.get("data_epoch_policy") != DATA_EPOCH_POLICY:
         raise ValueError("This checkpoint predates the worker epoch fix. Start a new training "
                          "run in a new output directory.")

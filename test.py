@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
                         help="Observed vis/ir inputs")
     parser.add_argument("--reference", type=Path, default=Path("datasets/test"),
                         help="Clean vis/ir references with matching stems")
-    parser.add_argument("--checkpoint", type=Path, default=Path("ckpt/MSRS_Model.pth"))
+    parser.add_argument("--checkpoint", type=Path, default=Path("ckpt/model.pth"))
     parser.add_argument("--output", type=Path, default=Path("results/test"))
     parser.add_argument("--device", choices=("cuda", "cpu", "mps"), default="cuda")
     parser.add_argument("--weights", choices=("ema", "model"), default="ema")

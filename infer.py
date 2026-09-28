@@ -32,8 +32,8 @@ from utils.image import luminance, save_tensor
 # Data folder: needs vis/ (or visible/vi) and ir/ (or infrared/inf) subfolders;
 # pairs are matched by filename stem.
 DATA = Path("datasets/test")
-# Weight file: your own training output is checkpoints/train/latest.pth;
-# switch to checkpoints/calibfuse.pth if you place released weights there.
+# Weight file: the released checkpoint that ships with this repository;
+# your own training output lands at checkpoints/train/latest.pth.
 CHECKPOINT = Path("ckpt/model.pth")
 # Output folder: results go to <OUTPUT>/rgb and <OUTPUT>/gray.
 OUTPUT = Path("results/test")

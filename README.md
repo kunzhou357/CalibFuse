@@ -33,7 +33,7 @@ datasets/
   train/{vis,ir}/
   test/{vis,ir}/
   test_noise/{vis,ir}/
-checkpoints/calibfuse.pth
+ckpt/model.pth
 ```
 
 Pairs use matching filename stems. Visible images are RGB; infrared images are
@@ -42,11 +42,8 @@ sources. All existing training pairs are used; no validation split is created.
 Keep training and test sets separate. See [data setup](datasets/README.md).
 
 A trained checkpoint is included at `ckpt/model.pth` (epoch 99; EMA or student
-weights selectable via `--weights`). It carries the legacy
-`nrfuse-benefit-calibrated-v2` format tag from before the project rename — the
-payload layout is identical, so it loads with a warning. `infer.py` defaults to
-this file; other entry points accept `--checkpoint ckpt/model.pth`. Run a new
-training (outputs go to `checkpoints/train/`) for your own weights.
+weights selectable via `--weights`), and every entry point defaults to it.
+Run a new training (outputs go to `checkpoints/train/`) for your own weights.
 
 ## Training
 
@@ -67,7 +64,7 @@ python infer.py --data datasets/test_noise --output results/inference
 python test.py --data datasets/test_noise --reference datasets/test --output results/test_noise
 ```
 
-Both default to `checkpoints/calibfuse.pth` and EMA weights. For a new
+Both default to `ckpt/model.pth` and EMA weights. For a new
 training run, add `--checkpoint checkpoints/train/latest.pth`. `infer.py` needs
 no references and writes RGB/grayscale PNGs. `test.py` writes seven metrics,
 `metrics.csv`, and a protocol with checkpoint SHA-256 and sample names.
