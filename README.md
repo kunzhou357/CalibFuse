@@ -20,7 +20,13 @@ CPU checks require `--device cpu`.
 
 ## Data and checkpoint
 
-Run commands from this directory. Download datasets separately and arrange pairs as:
+Run commands from this directory. Download the datasets from Baidu Netdisk
+(`datasets.zip`) and unzip the archive under the repository root:
+
+- Link: https://pan.baidu.com/s/1c94wb9mraY-qzFpo9ifUGw?pwd=abc1
+- Extraction code: `abc1`
+
+Arrange the extracted splits and any weights as:
 
 ```text
 datasets/
