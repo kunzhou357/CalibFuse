@@ -1,6 +1,9 @@
-# Install the CUDA-enabled PyTorch build for your system before this file.
-torch>=2.3
-numpy>=1.24
-Pillow>=9.0
-tqdm>=4.65
-einops>=0.6
+# CalibFuse runtime dependencies (verified imports; no torchvision needed).
+# Tested with Python 3.12 and the CUDA-enabled PyTorch build below. For a
+# CUDA build matching your system, prefer the official selector first:
+# https://pytorch.org/get-started/locally/
+torch==2.5.1
+numpy==2.5.3
+Pillow==12.3.0
+tqdm==4.70.1
+einops==0.8.2
