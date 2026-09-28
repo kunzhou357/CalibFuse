@@ -10,6 +10,7 @@ datasets/*
 checkpoints/
 results/
 *.pth
+!ckpt/model.pth
 
 # OS
 Thumbs.db

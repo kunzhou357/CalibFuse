@@ -41,9 +41,12 @@ grayscale. Test-noise inputs are evaluated against corresponding clean test
 sources. All existing training pairs are used; no validation split is created.
 Keep training and test sets separate. See [data setup](datasets/README.md).
 
-No weight files are included in this repository. Run a new training (outputs go
-to `checkpoints/train/`) or place your own weights at `checkpoints/calibfuse.pth`
-to use the default paths.
+A trained checkpoint is included at `ckpt/model.pth` (epoch 99; EMA or student
+weights selectable via `--weights`). It carries the legacy
+`nrfuse-benefit-calibrated-v2` format tag from before the project rename — the
+payload layout is identical, so it loads with a warning. `infer.py` defaults to
+this file; other entry points accept `--checkpoint ckpt/model.pth`. Run a new
+training (outputs go to `checkpoints/train/`) for your own weights.
 
 ## Training
 
