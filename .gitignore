@@ -8,8 +8,10 @@ datasets/*
 
 # Weights, training outputs, and evaluation results
 checkpoints/
-results/
+results/*
+!results/.gitkeep
 *.pth
+!ckpt/model.pth
 
 # OS
 Thumbs.db
