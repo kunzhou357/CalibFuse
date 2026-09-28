@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Dataset images (keep only the setup README)
+datasets/*
+!datasets/README.md
+
+# Weights, training outputs, and evaluation results
+checkpoints/
+results/
+*.pth
+
+# OS
+Thumbs.db
+.DS_Store
