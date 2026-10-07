@@ -1,1 +1,9 @@
-"""Datasets, degradation models, losses, image I/O, and evaluation utilities."""
+"""工具包：数据集、退化模型、损失与图像 I/O 工具。
+
+子模块一览:
+- ``checkpoint``: checkpoint 兼容性常量与模型加载；
+- ``dataset``: 成对数据集与质量均衡批采样器；
+- ``degradation``: 物理启发的可见光/红外退化模型；
+- ``image``: 图像 I/O、亮度、梯度等常用变换；
+- ``loss``: 训练损失（融合损失 + 干净教师校准正则）。
+"""

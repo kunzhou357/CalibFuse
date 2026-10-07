@@ -1,12 +1,11 @@
-"""Checkpoint compatibility constants and model loading shared by entry points.
+"""Checkpoint 兼容性常量与各入口共享的模型加载工具。
 
-- :data:`CHECKPOINT_FORMAT`: checkpoint payload format tag;
-- :data:`DATA_EPOCH_POLICY`: data-loader epoch policy tag (workers are
-  recreated each epoch; older checkpoints are rejected);
-- :data:`METRIC_PROTOCOL`: metric protocol tag (calibfuse-metrics-v1).
+- :data:`CHECKPOINT_FORMAT`：checkpoint 载荷格式标签；
+- :data:`DATA_EPOCH_POLICY`：数据加载 epoch 策略标签
+  （worker 每 epoch 重建；旧策略的 checkpoint 在加载时被拒绝）。
 
-Changing any constant breaks comparability with existing checkpoints or
-metric reports and requires a new version tag.
+修改任何一个常量都会破坏与既有 checkpoint / 评测报告的兼容性，
+必须同步打新的版本标签（这也是加载端校验的依据）。
 """
 
 from __future__ import annotations
@@ -18,16 +17,18 @@ import torch
 
 from nets.fusion import CalibFuse
 
-# Payload tag; checkpoints must carry the same value to load.
+# 载荷标签；checkpoint 必须携带相同值才能加载
 CHECKPOINT_FORMAT = "calibfuse-benefit-calibrated-v1"
-# Data-loader policy: workers are recreated each epoch.
+# 数据加载策略：worker 每个 epoch 重建
 DATA_EPOCH_POLICY = "recreate-workers-each-epoch-v1"
-# Metric protocol identifier; see utils/evaluator.py for the conventions.
-METRIC_PROTOCOL = "calibfuse-metrics-v1"
 
 
 def sha256_file(path: str | Path) -> str:
-    """Streamed SHA-256 hex digest of a file (1 MiB blocks)."""
+    """流式计算文件的 SHA-256 十六进制摘要（1 MiB 分块）。
+
+    用于把权重文件的"指纹"写进 protocol.json，
+    保证评测结果可追溯到确切的权重版本。
+    """
     digest = hashlib.sha256()
     with open(path, "rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
@@ -36,27 +37,39 @@ def sha256_file(path: str | Path) -> str:
 
 
 def load_model(path: Path, device: torch.device, weights: str = "ema") -> tuple[CalibFuse, dict]:
-    """Load a checkpoint with strict validation and rebuild the model.
+    """加载 checkpoint 并带严格校验地重建模型。
 
-    ``weights`` selects ``"ema"`` (default) or ``"model"``. The format and
-    data-epoch policy tags must match, and the architecture is rebuilt from
-    the payload's ``model_config`` with a strict state-dict load. Returns
-    the evaluated model and the full payload.
+    参数:
+        path: checkpoint 路径。
+        device: 目标设备（cuda 请求但不可用时直接报错，
+            提示改用 --device cpu）。
+        weights: ``"ema"``（默认，更稳定）或 ``"model"``（学生权重）。
 
-    Note: full training checkpoints contain optimizer state and are loaded
-    with ``torch.load(..., weights_only=False)`` — load trusted files only.
+    返回:
+        (评估模式的模型, 完整载荷字典)。
+
+    校验项:
+    - ``format`` 必须等于 CHECKPOINT_FORMAT；
+    - ``data_epoch_policy`` 必须等于 DATA_EPOCH_POLICY
+      （拒绝 worker 修复之前的旧 checkpoint）；
+    - 架构按载荷中的 ``model_config`` 重建，state_dict 严格加载。
+
+    安全提示：训练 checkpoint 包含优化器状态，加载使用
+    ``torch.load(..., weights_only=False)``——只加载可信文件。
     """
     if weights not in ("ema", "model"):
         raise ValueError("weights must be 'ema' or 'model'")
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable; use --device cpu for local checks")
-    # Full training checkpoints contain optimizer state: load only trusted files.
+    # 训练 checkpoint 含优化器状态：只加载可信文件
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if payload.get("format") != CHECKPOINT_FORMAT:
         raise ValueError(f"incompatible checkpoint format: {payload.get('format')!r}")
     if payload.get("data_epoch_policy") != DATA_EPOCH_POLICY:
         raise ValueError("Expected a checkpoint produced after the worker epoch fix")
+    # 按存储的 model_config 重建网络（不依赖代码默认值）
     model = CalibFuse(**payload["model_config"]).to(device)
+    # 权重选择：ema 取教师权重，model 取学生权重
     state = payload["ema"]["model"] if weights == "ema" else payload["model"]
     model.load_state_dict(state, strict=True)
     model.eval()

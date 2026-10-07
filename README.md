@@ -57,23 +57,18 @@ Defaults: 100 epochs, crop 256, batch 4, seed 3407, AdamW LR `2e-4` / minimum
 each iteration. Checkpoints, logs, and previews stay under the selected output
 directory. Resume must preserve training hyperparameters.
 
-## Inference and evaluation
+## Inference
 
 ```bash
-python infer.py --data datasets/test_noise --output results/inference
-python test.py --data datasets/test_noise --reference datasets/test --output results/test_noise
+python test.py --data datasets/test_noise --output results/test_noise
 ```
 
-Both default to `ckpt/model.pth` and EMA weights. For a new
-training run, add `--checkpoint checkpoints/train/latest.pth`. `infer.py` needs
-no references and writes RGB/grayscale PNGs. `test.py` writes seven metrics,
-`metrics.csv`, and a protocol with checkpoint SHA-256 and sample names.
-
-Metric caveat: the evaluator follows the fixed `calibfuse-metrics-v1`
-conventions — metrics are computed on saved 8-bit PNGs, MI uses natural logs,
-SSIM and VIF sum the two source scores, and PSNR/RMSE use a
-`sqrt(SSE)/(m·n)` denominator. Do not compare these numbers directly with
-other evaluators.
+`test.py` defaults to `ckpt/model.pth` and EMA weights. For a new
+training run, add `--checkpoint checkpoints/train/latest.pth`. It needs
+no references, computes no metrics, and writes RGB/grayscale PNGs plus a
+protocol with checkpoint SHA-256 and sample names. Defaults live in a
+config block at the top of `test.py` — edit the file instead of typing
+long CLI args (flags still override).
 
 ## Fusion results
 
@@ -115,7 +110,7 @@ and stuck pixels on infrared.
 ## Development
 
 ```bash
-python -m compileall -q train.py infer.py test.py nets utils
+python -m compileall -q train.py test.py nets utils
 ```
 
 This repository ships the source only; there is no bundled test suite. Keep

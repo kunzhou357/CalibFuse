@@ -17,5 +17,9 @@ results/*
 Thumbs.db
 .DS_Store
 
+# IDE
+.idea/
+
 # Agent instructions (local only)
 AGENTS.md
+.zcodeignore
